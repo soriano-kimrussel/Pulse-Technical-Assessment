@@ -1,20 +1,30 @@
-// Shared types across client + API.
+import type { VibeId } from "@/lib/vibes";
 
-// Signal mailbox message types.
 export type SignalType =
-  | "request" // connection request (tap a dot)
-  | "accept" // recipient accepted
-  | "decline" // recipient declined (or auto-declined while busy)
-  | "offer" // WebRTC SDP offer
-  | "answer" // WebRTC SDP answer
-  | "ice" // WebRTC ICE candidate
-  | "end"; // hang up / leave the connection
+  | "request" 
+  | "accept" 
+  | "decline" 
+  | "offer" 
+  | "answer" 
+  | "ice" 
+  | "end"; 
+
+export const SIGNAL_TYPES: readonly SignalType[] = [
+  "request",
+  "accept",
+  "decline",
+  "offer",
+  "answer",
+  "ice",
+  "end",
+];
 
 export interface PeerDot {
   id: string;
   lat: number;
   lng: number;
   busy: boolean;
+  vibe: VibeId;
 }
 
 export interface SignalMsg {
@@ -29,4 +39,19 @@ export interface SignalMsg {
 export interface PollResponse {
   peers: PeerDot[];
   signals: SignalMsg[];
+  self: { peerId: string | null; pendingTo: string | null };
+}
+
+export interface JoinResponse {
+  id: string;
+  token: string;
+  lat: number;
+  lng: number;
+}
+
+export interface SignalResult {
+  ok: boolean;
+  status: number;
+  autoDeclined?: boolean;
+  error?: string;
 }

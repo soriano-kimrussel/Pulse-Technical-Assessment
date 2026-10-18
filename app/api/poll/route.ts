@@ -1,50 +1,47 @@
 import type { NextRequest } from "next/server";
 import { prisma } from "@/lib/prisma";
+import { authenticate, bearerToken } from "@/lib/auth";
+import { removeSessions } from "@/lib/sessions";
+import { error, json, withErrors } from "@/lib/http";
 import { STALE_MS, SIGNAL_TTL_MS } from "@/lib/presence";
+import { getVibe } from "@/lib/vibes";
 import type { PollResponse } from "@/lib/types";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-// GET /api/poll?id= — the single endpoint that drives the live map.
-// It (1) heartbeats the caller, (2) reaps stale presence + orphan signals,
-// (3) returns the filtered online peers, and (4) drains this user's mailbox.
-export async function GET(request: NextRequest) {
-  const params = request.nextUrl.searchParams;
-  const id = params.get("id");
-
-  if (!id) {
-    return Response.json({ error: "missing id" }, { status: 400 });
-  }
+export const GET = withErrors(async (request: NextRequest) => {
+  const me = await authenticate(bearerToken(request));
+  if (!me) return error("unauthorized", 401);
 
   const now = Date.now();
   const staleCutoff = new Date(now - STALE_MS);
   const signalCutoff = new Date(now - SIGNAL_TTL_MS);
 
-  // 1) Heartbeat — refresh lastSeen for the caller.
-  await prisma.presence.updateMany({
-    where: {},
+  const beat = await prisma.presence.updateMany({
+    where: { id: me.id },
     data: { lastSeen: new Date(now) },
   });
+  if (beat.count === 0) return error("unauthorized", 401);
 
-  // 2) Reap stale presence rows and orphaned signals (independent deletes —
-  // no atomicity needed, and avoids transactions over a PgBouncer pooler).
-  await prisma.presence.deleteMany({ where: { lastSeen: { lt: staleCutoff } } });
+  const stale = await prisma.presence.findMany({
+    where: { lastSeen: { lt: staleCutoff } },
+    select: { id: true },
+  });
+  await removeSessions(stale.map((s) => s.id));
   await prisma.signal.deleteMany({ where: { createdAt: { lt: signalCutoff } } });
 
-  // 3) Online peers, excluding self.
   const peers = await prisma.presence.findMany({
     where: {
-      id: { not: id },
+      id: { not: me.id, notIn: me.blocked },
       lastSeen: { gte: staleCutoff },
+      NOT: { blocked: { has: me.id } },
     },
-    select: { id: true, lat: true, lng: true, busy: true },
+    select: { id: true, lat: true, lng: true, peerId: true, vibe: true },
   });
 
-  // 4) Drain this user's mailbox: read, then delete exactly what we read so a
-  // concurrently-inserted signal is never lost.
   const inbox = await prisma.signal.findMany({
-    where: { toId: id },
+    where: { toId: me.id },
     orderBy: { createdAt: "asc" },
   });
   if (inbox.length > 0) {
@@ -54,11 +51,13 @@ export async function GET(request: NextRequest) {
   }
 
   const response: PollResponse = {
+    self: { peerId: me.peerId, pendingTo: me.pendingTo },
     peers: peers.map((p) => ({
       id: p.id,
       lat: p.lat,
       lng: p.lng,
-      busy: p.busy,
+      busy: p.peerId !== null,
+      vibe: getVibe(p.vibe).id,
     })),
     signals: inbox.map((s) => ({
       id: s.id,
@@ -70,5 +69,5 @@ export async function GET(request: NextRequest) {
     })),
   };
 
-  return Response.json(response);
-}
+  return json(response);
+});
